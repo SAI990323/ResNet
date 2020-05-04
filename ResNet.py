@@ -35,6 +35,23 @@ class MyData(data.Dataset):
     def __len__(self):
         return len(self.data)
 
+class SELayer(nn.Module):
+    def __init__(self, channel, reduction=16):
+        super(SELayer, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Linear(channel, channel // reduction, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(channel // reduction, channel, bias=False),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        b, c, _, _ = x.size()
+        y = self.avg_pool(x).view(b, c)
+        y = self.fc(y).view(b, c, 1, 1)
+        return x * y.expand_as(x)
+
 
 class ResBlock(nn.Module):
     def __init__(self, inchannel, outchannel, stride=1):
@@ -59,8 +76,36 @@ class ResBlock(nn.Module):
         output = F.relu(output)
         return output
 
+class SE_ResBlock(nn.Module):
+    def __init__(self, inchannel, outchannel, stride = 1, ratio = 16):
+        super(SE_ResBlock, self).__init__()
+        self.outchannel = outchannel
+        self.ratio = ratio
+        self.left = nn.Sequential(
+            nn.Conv2d(inchannel, outchannel, kernel_size=3, stride=stride, padding=1, bias=False),
+            nn.BatchNorm2d(outchannel),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(outchannel, outchannel, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.BatchNorm2d(outchannel)
+        )
+        self.shortcut = nn.Sequential()
+        if stride != 1 or inchannel != outchannel:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(inchannel, outchannel, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(outchannel)
+            )
+        self.right = SELayer(outchannel)
+
+    def forward(self, input):
+        output = self.left(input)
+        output = self.right(output)
+        output += self.shortcut(input)
+        output = F.relu(output)
+        return output
+
+
 class ResNet(nn.Module):
-    def __init__(self, ResidualBlock):
+    def __init__(self, block):
         super(ResNet, self).__init__()
         self.inchannel = 64
         self.conv1 = nn.Sequential(
@@ -68,10 +113,10 @@ class ResNet(nn.Module):
             nn.BatchNorm2d(64),
             nn.ReLU(),
         )
-        self.layer1 = self.make_layer(ResidualBlock, 64,  2, stride=1)
-        self.layer2 = self.make_layer(ResidualBlock, 128, 2, stride=2)
-        self.layer3 = self.make_layer(ResidualBlock, 256, 2, stride=2)
-        self.layer4 = self.make_layer(ResidualBlock, 512, 2, stride=2)
+        self.layer1 = self.make_layer(block, 64,  2, stride=1)
+        self.layer2 = self.make_layer(block, 128, 2, stride=2)
+        self.layer3 = self.make_layer(block, 256, 2, stride=2)
+        self.layer4 = self.make_layer(block, 512, 2, stride=2)
         self.fc = nn.Linear(512, 128)
         self.fc2 = nn.Linear(128, 32)
         self.fc3 = nn.Linear(32, 10)
@@ -105,13 +150,16 @@ transform = torchvision.transforms.Compose([
     ])
 
 
-def train(epoch, learning_rate, batch_size, net = None, gpu_available = True):
+def train(epoch, learning_rate, batch_size, net = None, gpu_available = True, se_available=True):
     writer = SummaryWriter(comment='ResNet')
     device = torch.device("cuda")
     if not gpu_available:
         device = torch.device("cpu")
     if net is None:
-        net = ResNet(ResBlock)
+        if not se_available:
+            net = ResNet(ResBlock)
+        else:
+            net = ResNet(SE_ResBlock)
         net = net.to(device)
     train = MyData(train=True, transform=transform)
     trainset = torch.utils.data.DataLoader(train, batch_size=batch_size)
@@ -131,7 +179,7 @@ def train(epoch, learning_rate, batch_size, net = None, gpu_available = True):
             total_loss += loss.item()
             predicted = torch.argmax(outputs.data, 1)
             correct += (predicted == targets).sum().item()
-        print("epoch %d: train_acc: %.3f" % (i, correct / 60000))
+        print("epoch %d: train_acc: %.3f" % (i, correct / 50000))
         writer.add_scalar('Train', total_loss / len(trainset), i)
         test_acc = test(net = net)
         writer.add_scalar('Test', test_acc, i)
@@ -167,6 +215,7 @@ if __name__ == '__main__':
     parser.add_argument("--epoch", dest="epoch", default=40, type=int)
     parser.add_argument("--learning_rate", dest="lr", default=0.1,type=float)
     parser.add_argument("--gpu", dest="gpu", default=True, type=bool)
+    parser.add_argument("--se", dest="se", default=True, type=bool)
     args = parser.parse_args()
-    train(epoch=args.epoch, learning_rate=args.lr, batch_size=args.batch_size, gpu_available=args.gpu)
+    train(epoch=args.epoch, learning_rate=args.lr, batch_size=args.batch_size, gpu_available=args.gpu, se_available=args.se)
 
