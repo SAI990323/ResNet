@@ -36,9 +36,9 @@ class MyData(data.Dataset):
         return len(self.data)
 
 
-class ResidualBlock(nn.Module):
+class ResBlock(nn.Module):
     def __init__(self, inchannel, outchannel, stride=1):
-        super(ResidualBlock, self).__init__()
+        super(ResBlock, self).__init__()
         self.left = nn.Sequential(
             nn.Conv2d(inchannel, outchannel, kernel_size=3, stride=stride, padding=1, bias=False),
             nn.BatchNorm2d(outchannel),
@@ -53,14 +53,14 @@ class ResidualBlock(nn.Module):
                 nn.BatchNorm2d(outchannel)
             )
 
-    def forward(self, x):
-        out = self.left(x)
-        out += self.shortcut(x)
-        out = F.relu(out)
-        return out
+    def forward(self, input):
+        output = self.left(input)
+        output += self.shortcut(input)
+        output = F.relu(output)
+        return output
 
 class ResNet(nn.Module):
-    def __init__(self, ResidualBlock, num_classes=10):
+    def __init__(self, ResidualBlock):
         super(ResNet, self).__init__()
         self.inchannel = 64
         self.conv1 = nn.Sequential(
@@ -72,7 +72,9 @@ class ResNet(nn.Module):
         self.layer2 = self.make_layer(ResidualBlock, 128, 2, stride=2)
         self.layer3 = self.make_layer(ResidualBlock, 256, 2, stride=2)
         self.layer4 = self.make_layer(ResidualBlock, 512, 2, stride=2)
-        self.fc = nn.Linear(512, num_classes)
+        self.fc = nn.Linear(512, 128)
+        self.fc2 = nn.Linear(128, 32)
+        self.fc3 = nn.Linear(32, 10)
 
     def make_layer(self, block, channels, num_blocks, stride):
         strides = [stride] + [1] * (num_blocks - 1)   #strides=[1,1]
@@ -83,39 +85,39 @@ class ResNet(nn.Module):
         return nn.Sequential(*layers)
 
     def forward(self, x):
-        out = self.conv1(x)
-        out = self.layer1(out)
-        out = self.layer2(out)
-        out = self.layer3(out)
-        out = self.layer4(out)
-        out = F.avg_pool2d(out, 4)
-        out = out.view(out.size(0), -1)
-        out = self.fc(out)
-        return out
+        output = self.conv1(x)
+        output= self.layer1(output)
+        output = self.layer2(output)
+        output = self.layer3(output)
+        output = self.layer4(output)
+        output = F.avg_pool2d(output, 4)
+        output = output.view(output.size(0), -1)
+        output = self.fc(output)
+        output = self.fc2(output)
+        output = self.fc3(output)
+        return output
 
 transform = torchvision.transforms.Compose([
+    transforms.RandomCrop(32,padding=4),
+    transforms.RandomHorizontalFlip(),
     transforms.ToTensor(),
     transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
     ])
 
 
 def train(epoch, learning_rate, batch_size, net = None, gpu_available = True):
-    writer = SummaryWriter(comment='Alexnet')
+    writer = SummaryWriter(comment='ResNet')
     device = torch.device("cuda")
     if not gpu_available:
         device = torch.device("cpu")
     if net is None:
-        net = ResNet(ResidualBlock)
+        net = ResNet(ResBlock)
         net = net.to(device)
     train = MyData(train=True, transform=transform)
     trainset = torch.utils.data.DataLoader(train, batch_size=batch_size)
     lossfunc = nn.CrossEntropyLoss()
     optimizer = torch.optim.SGD(net.parameters(), lr=learning_rate, momentum=0.9, nesterov=True)
-    last_correct = 0
     for i in range(epoch):
-        if i == 30 and learning_rate > 0.002:
-           learning_rate = learning_rate / 10
-           optimizer = torch.optim.SGD(net.parameters(), lr=learning_rate, momentum=0.9, nesterov=True)
         total_loss = 0
         correct = 0
         for data, target in trainset:
@@ -129,15 +131,13 @@ def train(epoch, learning_rate, batch_size, net = None, gpu_available = True):
             total_loss += loss.item()
             predicted = torch.argmax(outputs.data, 1)
             correct += (predicted == targets).sum().item()
+        print("epoch %d: train_acc: %.3f" % (i, correct / 60000))
         writer.add_scalar('Train', total_loss / len(trainset), i)
         test_acc = test(net = net)
         writer.add_scalar('Test', test_acc, i)
-        if abs(correct - last_correct) < 10:
+        if i % 50 == 0:
             learning_rate = learning_rate / 10
             optimizer = torch.optim.SGD(net.parameters(), lr=learning_rate, momentum=0.9, nesterov=True)
-        if learning_rate < 0.00001:
-            break
-        last_correct = correct
     writer.close()
 
 def test(batch_size=128, net = None):
@@ -165,7 +165,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--batch", dest="batch_size", default=128, type=int)
     parser.add_argument("--epoch", dest="epoch", default=40, type=int)
-    parser.add_argument("--learning_rate", dest="lr", default=0.01,type=float)
+    parser.add_argument("--learning_rate", dest="lr", default=0.1,type=float)
     parser.add_argument("--gpu", dest="gpu", default=True, type=bool)
     args = parser.parse_args()
     train(epoch=args.epoch, learning_rate=args.lr, batch_size=args.batch_size, gpu_available=args.gpu)
