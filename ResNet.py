@@ -149,8 +149,13 @@ transform = torchvision.transforms.Compose([
     transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
     ])
 
+transform_test = torchvision.transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+    ])
 
-def train(epoch, learning_rate, batch_size, net = None, gpu_available = True, se_available=True):
+
+def train(epoch, learning_rate, batch_size, net = None, gpu_available = True, se_available=True, half_available=False):
     writer = SummaryWriter(comment='ResNet')
     device = torch.device("cuda")
     if not gpu_available:
@@ -165,11 +170,15 @@ def train(epoch, learning_rate, batch_size, net = None, gpu_available = True, se
     trainset = torch.utils.data.DataLoader(train, batch_size=batch_size)
     lossfunc = nn.CrossEntropyLoss()
     optimizer = torch.optim.SGD(net.parameters(), lr=learning_rate, momentum=0.9, nesterov=True)
+    if half_available:
+        net = net.cuda().half()
     for i in range(epoch):
         total_loss = 0
         correct = 0
         for data, target in trainset:
             inputs = data.to(device)
+            if half_available:
+                inputs = inputs.cuda().half()
             targets = target.to(device)
             optimizer.zero_grad()
             outputs = net(inputs)
@@ -181,24 +190,26 @@ def train(epoch, learning_rate, batch_size, net = None, gpu_available = True, se
             correct += (predicted == targets).sum().item()
         print("epoch %d: train_acc: %.3f" % (i, correct / 50000))
         writer.add_scalar('Train', total_loss / len(trainset), i)
-        test_acc = test(net = net)
+        test_acc = test(net = net, half_available = half_available)
         writer.add_scalar('Test', test_acc, i)
-        if i % 50 == 0:
+        if i % 50 == 49:
             learning_rate = learning_rate / 10
             optimizer = torch.optim.SGD(net.parameters(), lr=learning_rate, momentum=0.9, nesterov=True)
     writer.close()
 
-def test(batch_size=128, net = None):
+def test(batch_size=128, net = None, half_available = False):
     if net is None:
         net = torch.load('Alexnet.model')
     device = torch.device("cuda")
-    test = MyData(train=False, transform=transform)
+    test = MyData(train=False, transform=transform_test)
     testset = torch.utils.data.DataLoader(test, batch_size=batch_size)
     correct = 0
     total = 0
     with torch.no_grad():
         for data, target in testset:
             inputs = data.to(device)
+            if half_available:
+                inputs = inputs.cuda().half()
             targets = target.to(device)
             outputs = net(inputs)
             predicted = torch.argmax(outputs.data, 1)
@@ -214,8 +225,9 @@ if __name__ == '__main__':
     parser.add_argument("--batch", dest="batch_size", default=128, type=int)
     parser.add_argument("--epoch", dest="epoch", default=40, type=int)
     parser.add_argument("--learning_rate", dest="lr", default=0.1,type=float)
-    parser.add_argument("--gpu", dest="gpu", default=True, type=bool)
-    parser.add_argument("--se", dest="se", default=True, type=bool)
+    parser.add_argument("--gpu", dest="gpu", default=False, action='store_true')
+    parser.add_argument("--se", dest="se", default=False, action='store_true')
+    parser.add_argument("--half", dest="half", default=False, action='store_true')
     args = parser.parse_args()
     train(epoch=args.epoch, learning_rate=args.lr, batch_size=args.batch_size, gpu_available=args.gpu, se_available=args.se)
 
